@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod';
@@ -19,10 +20,28 @@ const GITIGNORE_PATH = path.join(ROOT_DIR, '.gitignore');
 // ACE API 配置（用于搜索功能）
 const ACE_BASE_URL = process.env.ACE_BASE_URL || '';
 const ACE_API_KEY = process.env.ACE_API_KEY || '';
+const ACE_USER_AGENT = 'augment.cli/0.12.0/mcp';
+const ACE_REQUEST_TIMEOUT_MS = getPositiveInt(process.env.ACE_REQUEST_TIMEOUT_MS, 30000);
+const ACE_MAX_LINES_PER_BLOB = getPositiveInt(process.env.ACE_MAX_LINES_PER_BLOB, 800);
+const ACE_MAX_BATCH_BYTES = 1024 * 1024;
+const ACE_RETRY_LIMIT = 3;
+const ACE_RETRY_BASE_MS = 1000;
+let aceSessionId;
 
 // ============================================================================
 // 工具函数
 // ============================================================================
+
+/**
+ * 获取正整数配置，非法时返回默认值
+ */
+function getPositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
 
 /**
  * 规范化日志目录名称
@@ -335,43 +354,28 @@ async function readLog({ identifier }) {
 }
 
 /**
- * 搜索日志
- * 支持两种模式：
- * 1. 配置了 ACE API 时，调用 ACE API 进行语义搜索
- * 2. 未配置 ACE API 时，使用本地关键词搜索
+ * 搜索日志（仅 ACE 语义搜索）
  */
 async function searchLogs({ query }) {
   if (!query || !String(query).trim()) {
     throw new Error('query 不能为空');
   }
 
-  const trimmedQuery = String(query).trim();
-
-  // 如果配置了 ACE API，使用 ACE 搜索
-  if (ACE_BASE_URL && ACE_API_KEY) {
-    return await searchLogsWithAce(trimmedQuery);
+  if (!ACE_BASE_URL || !ACE_API_KEY) {
+    throw new Error('search-logs 需要配置 ACE_BASE_URL 和 ACE_API_KEY');
   }
 
-  // 否则使用本地搜索
-  return await searchLogsLocally(trimmedQuery);
+  return await searchLogsWithAce(String(query).trim());
 }
 
 /**
  * 使用 ACE API 进行语义搜索
  */
 async function searchLogsWithAce(query) {
-  // 确保 base_url 使用 https
-  let baseUrl = ACE_BASE_URL;
-  if (baseUrl.startsWith('http://')) {
-    baseUrl = baseUrl.replace('http://', 'https://');
-  } else if (!baseUrl.startsWith('https://')) {
-    baseUrl = `https://${baseUrl}`;
-  }
-  baseUrl = baseUrl.replace(/\/+$/, '');
+  const baseUrl = normalizeAceBaseUrl(ACE_BASE_URL);
 
-  // 首先收集所有日志文件内容作为 blobs
+  // 先收集日志内容并拆分为 blobs
   const blobs = await collectLogBlobs();
-  
   if (blobs.length === 0) {
     return {
       query,
@@ -380,58 +384,63 @@ async function searchLogsWithAce(query) {
     };
   }
 
-  // 调用 ACE codebase-retrieval API
-  const searchEndpoint = `${baseUrl}/agents/codebase-retrieval`;
-  
-  try {
-    const requestBody = {
-      information_request: query,
-      blobs: {
-        checkpoint_id: null,
-        added_blobs: blobs.map(b => b.hash),
-        deleted_blobs: []
-      },
-      dialog: [],
-      max_output_length: 0,
-      disable_codebase_retrieval: false,
-      enable_commit_retrieval: false
-    };
-
-    // 首先上传 blobs
-    await uploadBlobs(baseUrl, blobs);
-
-    const response = await fetch(searchEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${ACE_API_KEY}`,
-        'User-Agent': 'agent-log-server/1.0.0'
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`ACE API 请求失败 (${response.status}): ${errorText}`);
-    }
-
-    const result = await response.json();
-    
+  // 上传 blobs 获取 blob_names
+  const blobNames = await uploadBlobs(baseUrl, blobs);
+  if (blobNames.length === 0) {
     return {
       query,
-      results: result.formatted_retrieval || '未找到相关内容。',
+      results: '日志内容上传失败，无法执行搜索。',
       logDir: LOG_DIR_NAME
     };
-  } catch (error) {
-    if (error.name === 'TypeError' && error.message.includes('fetch')) {
-      throw new Error(`无法连接到 ACE API: ${baseUrl}`);
-    }
-    throw error;
   }
+
+  const searchEndpoint = `${baseUrl}/agents/codebase-retrieval`;
+  const requestBody = {
+    information_request: query,
+    blobs: {
+      checkpoint_id: null,
+      added_blobs: blobNames,
+      deleted_blobs: []
+    },
+    dialog: [],
+    max_output_length: 0,
+    disable_codebase_retrieval: false,
+    enable_commit_retrieval: false
+  };
+
+  const response = await postAceJson(searchEndpoint, requestBody, ACE_REQUEST_TIMEOUT_MS);
+  const result = await safeReadJson(response);
+  const formatted = String(result?.formatted_retrieval ?? '').trim();
+
+  return {
+    query,
+    results: formatted || '未找到相关内容。',
+    logDir: LOG_DIR_NAME
+  };
+}
+
+function normalizeAceBaseUrl(baseUrl) {
+  let normalized = String(baseUrl ?? '').trim();
+  if (!normalized) {
+    throw new Error('ACE_BASE_URL 不能为空');
+  }
+  if (normalized.startsWith('http://')) {
+    normalized = normalized.replace('http://', 'https://');
+  } else if (!normalized.startsWith('https://')) {
+    normalized = `https://${normalized}`;
+  }
+  return normalized.replace(/\/+$/, '');
+}
+
+function getAceSessionId() {
+  if (!aceSessionId) {
+    aceSessionId = randomUUID();
+  }
+  return aceSessionId;
 }
 
 /**
- * 收集日志文件作为 blobs
+ * 收集日志文件并拆分为 blobs
  */
 async function collectLogBlobs() {
   let entries = [];
@@ -446,7 +455,7 @@ async function collectLogBlobs() {
   }
 
   const blobs = [];
-  
+
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) {
       continue;
@@ -454,13 +463,10 @@ async function collectLogBlobs() {
 
     const filePath = path.join(LOG_DIR_PATH, entry.name);
     try {
-      const content = await fs.readFile(filePath, 'utf8');
-      const hash = await calculateHash(entry.name, content);
-      blobs.push({
-        path: entry.name,
-        content,
-        hash
-      });
+      const rawContent = await fs.readFile(filePath, 'utf8');
+      const content = sanitizeAceContent(rawContent);
+      const chunks = splitLogContent(entry.name, content);
+      blobs.push(...chunks);
     } catch {
       // 忽略读取错误
     }
@@ -469,137 +475,154 @@ async function collectLogBlobs() {
   return blobs;
 }
 
-/**
- * 计算内容哈希
- */
-async function calculateHash(filePath, content) {
-  const crypto = await import('node:crypto');
-  const hash = crypto.createHash('sha256');
-  hash.update(filePath);
-  hash.update(content);
-  return hash.digest('hex');
+function sanitizeAceContent(content) {
+  return String(content ?? '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+}
+
+function splitLogContent(fileName, content) {
+  const lines = String(content ?? '').split('\n');
+  const maxLines = ACE_MAX_LINES_PER_BLOB;
+  if (lines.length <= maxLines) {
+    return [{ path: fileName, content }];
+  }
+
+  const chunks = [];
+  const totalChunks = Math.ceil(lines.length / maxLines);
+  for (let i = 0; i < totalChunks; i += 1) {
+    const start = i * maxLines;
+    const end = Math.min(start + maxLines, lines.length);
+    const chunkContent = lines.slice(start, end).join('\n');
+    const chunkPath = `${fileName}#chunk${i + 1}of${totalChunks}`;
+    chunks.push({ path: chunkPath, content: chunkContent });
+  }
+  return chunks;
+}
+
+function buildBlobBatches(blobs) {
+  const batches = [];
+  let current = [];
+  let currentSize = 0;
+
+  for (const blob of blobs) {
+    const blobSize = String(blob.content ?? '').length + String(blob.path ?? '').length;
+    if (current.length > 0 && currentSize + blobSize > ACE_MAX_BATCH_BYTES) {
+      batches.push(current);
+      current = [];
+      currentSize = 0;
+    }
+    current.push(blob);
+    currentSize += blobSize;
+  }
+
+  if (current.length > 0) {
+    batches.push(current);
+  }
+
+  return batches;
 }
 
 /**
- * 上传 blobs 到 ACE API
+ * 上传 blobs 到 ACE API，返回 blob_names
  */
 async function uploadBlobs(baseUrl, blobs) {
-  const uploadEndpoint = `${baseUrl}/batch-upload`;
-  
-  const uploadData = blobs.map(b => ({
-    path: b.path,
-    content: b.content
-  }));
-
-  const response = await fetch(uploadEndpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${ACE_API_KEY}`,
-      'User-Agent': 'agent-log-server/1.0.0'
-    },
-    body: JSON.stringify({ blobs: uploadData })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`上传 blobs 失败 (${response.status}): ${errorText}`);
+  if (blobs.length === 0) {
+    return [];
   }
+
+  const uploadEndpoint = `${baseUrl}/batch-upload`;
+  const batches = buildBlobBatches(blobs);
+  const blobNames = [];
+
+  for (const batch of batches) {
+    const response = await postAceJson(uploadEndpoint, { blobs: batch }, ACE_REQUEST_TIMEOUT_MS);
+    const result = await safeReadJson(response);
+    if (!Array.isArray(result?.blob_names) || result.blob_names.length === 0) {
+      throw new Error('ACE 返回的 blob_names 为空，无法继续搜索');
+    }
+    blobNames.push(...result.blob_names);
+  }
+
+  return blobNames;
 }
 
-/**
- * 本地关键词搜索
- */
-async function searchLogsLocally(query) {
-  let entries = [];
+async function postAceJson(url, body, timeoutMs) {
+  const payload = JSON.stringify(body);
+  const baseHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${ACE_API_KEY}`,
+    'User-Agent': ACE_USER_AGENT,
+    'x-request-session-id': getAceSessionId()
+  };
 
-  try {
-    entries = await fs.readdir(LOG_DIR_PATH, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return {
-        query,
-        results: '日志目录不存在。',
-        logDir: LOG_DIR_NAME
-      };
-    }
-    throw error;
-  }
+  return await fetchWithRetry(url, {
+    method: 'POST',
+    headers: baseHeaders,
+    body: payload
+  }, timeoutMs);
+}
 
-  const keywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
-  const matches = [];
+async function fetchWithRetry(url, options, timeoutMs) {
+  let lastError;
 
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.md')) {
-      continue;
-    }
+  for (let attempt = 0; attempt < ACE_RETRY_LIMIT; attempt += 1) {
+    const headers = {
+      ...options.headers,
+      'x-request-id': randomUUID()
+    };
 
-    const filePath = path.join(LOG_DIR_PATH, entry.name);
     try {
-      const content = await fs.readFile(filePath, 'utf8');
-      const lowerContent = content.toLowerCase();
-      
-      // 检查是否包含所有关键词
-      const allMatch = keywords.every(k => lowerContent.includes(k));
-      if (!allMatch) {
+      const response = await fetchWithTimeout(url, { ...options, headers }, timeoutMs);
+      if (response.ok) {
+        return response;
+      }
+
+      if ((response.status === 429 || response.status >= 500) && attempt < ACE_RETRY_LIMIT - 1) {
+        const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
+        const waitMs = Number.isFinite(retryAfter)
+          ? retryAfter * 1000
+          : ACE_RETRY_BASE_MS * Math.pow(2, attempt);
+        await sleep(waitMs);
         continue;
       }
 
-      // 提取匹配的上下文
-      const parsed = parseLogFileName(entry.name);
-      const title = extractTitleFromContent(content) || parsed?.title || '未知标题';
-      
-      // 找到第一个匹配的位置，提取周围的文本
-      const snippets = [];
-      for (const keyword of keywords) {
-        const idx = lowerContent.indexOf(keyword);
-        if (idx !== -1) {
-          const start = Math.max(0, idx - 50);
-          const end = Math.min(content.length, idx + keyword.length + 100);
-          const snippet = content.slice(start, end).replace(/\n/g, ' ').trim();
-          if (snippet && !snippets.includes(snippet)) {
-            snippets.push(`...${snippet}...`);
-          }
-        }
+      const errorText = await response.text();
+      throw new Error(`ACE API 请求失败 (${response.status}): ${errorText}`);
+    } catch (error) {
+      lastError = error;
+      const isAbort = error?.name === 'AbortError';
+      const isNetwork = String(error?.message || '').includes('fetch');
+      if ((isAbort || isNetwork) && attempt < ACE_RETRY_LIMIT - 1) {
+        await sleep(ACE_RETRY_BASE_MS * Math.pow(2, attempt));
+        continue;
       }
-
-      matches.push({
-        number: parsed?.number || 0,
-        fileName: entry.name,
-        title,
-        snippets: snippets.slice(0, 2) // 最多2个片段
-      });
-    } catch {
-      // 忽略读取错误
+      throw error;
     }
   }
 
-  // 按编号降序排序（最新的在前）
-  matches.sort((a, b) => b.number - a.number);
+  throw lastError || new Error('ACE API 请求失败');
+}
 
-  // 格式化输出（类似 ace-tool-rs 的 formatted_retrieval 格式）
-  if (matches.length === 0) {
-    return {
-      query,
-      results: '未找到匹配的日志记录。',
-      logDir: LOG_DIR_NAME
-    };
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
+}
 
-  const formattedResults = matches.map(m => {
-    let result = `## ${m.fileName}\n### ${m.title}\n`;
-    if (m.snippets.length > 0) {
-      result += '\n' + m.snippets.join('\n') + '\n';
-    }
-    return result;
-  }).join('\n---\n\n');
+async function safeReadJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
 
-  return {
-    query,
-    results: formattedResults,
-    matchCount: matches.length,
-    logDir: LOG_DIR_NAME
-  };
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ============================================================================
@@ -698,11 +721,7 @@ async function main() {
       title: '搜索历史日志',
       description: `**重要提示：当需要查找历史记录时，优先使用此工具进行搜索！**
 
-使用自然语言搜索历史日志记录。支持两种搜索模式：
-
-## 搜索模式
-1. **ACE 语义搜索**（推荐）：配置 ACE_BASE_URL 和 ACE_API_KEY 后，使用 ACE 代码搜索引擎进行语义搜索
-2. **本地关键词搜索**：未配置 ACE API 时，使用本地关键词匹配搜索
+使用自然语言搜索历史日志记录。此工具仅支持 ACE 语义搜索。
 
 ## 使用场景
 - 当你需要查找之前做过的相关任务
@@ -717,7 +736,10 @@ async function main() {
 - "用户认证功能的实现过程"
 
 ## 返回格式
-返回与 ace-tool-rs 一致的格式化搜索结果，包含文件路径和相关代码片段。`,
+返回与 ace-tool-rs 一致的格式化搜索结果，包含文件路径和相关代码片段。
+
+## 配置要求
+需要配置 ACE_BASE_URL 和 ACE_API_KEY 环境变量。`,
       inputSchema: {
         query: z.string().min(1).describe('自然语言搜索查询')
       },

@@ -104,9 +104,9 @@ npm run start:bun
 }
 ```
 
-### 启用搜索功能（可选）
+### 启用 ACE 搜索功能
 
-如需使用 `search-logs` 工具进行智能搜索，需要配置 ACE API：
+如需使用 `search-logs` 工具进行语义搜索，需要配置 ACE API：
 
 ```json
 {
@@ -194,9 +194,9 @@ npm run start:bun
 
 ### `search-logs`
 
-使用自然语言搜索历史日志记录。
+使用自然语言搜索历史日志记录（仅支持 ACE 语义搜索）。
 
-> ⚠️ 此工具需要配置 ACE API（`ACE_BASE_URL` 和 `ACE_API_KEY`）
+> ⚠️ 此工具必须配置 ACE API（`ACE_BASE_URL` 和 `ACE_API_KEY`）
 
 **输入参数：**
 
@@ -210,7 +210,7 @@ npm run start:bun
 - "之前做过哪些 API 相关的任务？"
 - "修复登录 bug 的记录"
 
-**输出：** 返回与查询相关的日志片段和文件信息。
+**输出：** 返回与 ace-tool-rs 一致的格式化检索结果。
 
 ---
 
@@ -221,6 +221,8 @@ npm run start:bun
 | `AGENT_LOG_DIR` | 日志目录名称（相对于工作目录） | `AgentLogs` |
 | `ACE_BASE_URL` | ACE 搜索 API 的基础 URL | - |
 | `ACE_API_KEY` | ACE 搜索 API 的认证密钥 | - |
+| `ACE_REQUEST_TIMEOUT_MS` | ACE 请求超时（毫秒） | `30000` |
+| `ACE_MAX_LINES_PER_BLOB` | 单个日志分块最大行数 | `800` |
 
 ## 📝 使用提示
 
@@ -229,13 +231,13 @@ npm run start:bun
 在你的 Agent 系统提示词中加入以下内容，以便更好地利用此工具：
 
 ```
-## 日志记录规则
+## 日志记录与查找规则
 
-1. 在执行任务时，应在项目根目录下的 AgentLogs 目录中记录本次任务
-2. 文件名格式为（编号-任务标题.md），编号为现有最大编号+1，使用四位数(0001~9999)
-3. 对于大型复杂任务，每完成一个小阶段或重要节点就记录一次
-4. 需要时可通过 list-logs 和 read-log 查看历史记录获取信息
-5. **优先使用 search-logs 工具搜索历史记录**，快速定位相关信息
+1. 使用 `record-agent-log` 记录工作，不直接创建/编辑日志文件
+2. 通过 `list-logs` 获取历史列表，不直接浏览 AgentLogs 目录
+3. 通过 `read-log` 查看内容，不直接打开日志文件
+4. **查找历史记录时优先使用 `search-logs`，禁止使用关键词手动搜索文件**
+5. 对于大型复杂任务，每完成一个小阶段或重要节点就记录一次
 ```
 
 ## 🔐 安全说明
