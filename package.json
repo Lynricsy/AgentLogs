@@ -1,16 +1,43 @@
 {
-  "name": "agentlogs",
+  "name": "mcp-agentlogs",
   "version": "1.0.0",
-  "description": "MCP日志记录工具（Node/Bun）",
+  "description": "MCP Agent 日志记录工具 - 支持日志记录、列表、查看和搜索功能",
   "main": "src/index.js",
+  "bin": {
+    "mcp-agentlogs": "src/index.js"
+  },
   "scripts": {
     "start": "node \"src/index.js\"",
     "start:bun": "bun \"src/index.js\""
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "agent",
+    "logging",
+    "ai",
+    "claude",
+    "cursor"
+  ],
+  "author": "Lynricsy",
   "license": "ISC",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lynricsy/AgentLogs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lynricsy/AgentLogs/issues"
+  },
+  "homepage": "https://github.com/Lynricsy/AgentLogs#readme",
+  "files": [
+    "src/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",
     "zod": "^4.3.5"

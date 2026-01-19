@@ -244,6 +244,38 @@ npm run start:bun
 - 日志目录必须位于当前工作目录内，防止写入外部路径
 - 文件名会自动清理特殊字符，确保跨平台兼容性
 
+## 🔄 版本发布
+
+本项目使用 GitHub Actions 自动发布到 npm。
+
+### 发布新版本
+
+1. 更新 `package.json` 中的版本号
+2. 提交更改：`git commit -am "chore: bump version to x.x.x"`
+3. 创建标签：`git tag vx.x.x`
+4. 推送标签：`git push origin vx.x.x`
+
+GitHub Actions 将自动：
+- 发布包到 npm
+- 创建 GitHub Release
+
+## 🤝 贡献
+
+欢迎贡献代码！请遵循以下步骤：
+
+1. Fork 本仓库
+2. 创建功能分支：`git checkout -b feature/amazing-feature`
+3. 提交更改：`git commit -m ':sparkles: feat: add amazing feature'`
+4. 推送分支：`git push origin feature/amazing-feature`
+5. 创建 Pull Request
+
+### 提交规范
+
+使用 [Gitmoji](https://gitmoji.dev/) + Conventional Commits 格式：
+
+- `:tada:` `:sparkles:` `:bug:` `:memo:` 等表情符号
+- `feat:` `fix:` `docs:` `chore:` 等类型前缀
+
 ## 📄 许可证
 
 ISC License
