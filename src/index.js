@@ -335,17 +335,31 @@ async function readLog({ identifier }) {
 }
 
 /**
- * 搜索日志（调用 ACE API）
+ * 搜索日志
+ * 支持两种模式：
+ * 1. 配置了 ACE API 时，调用 ACE API 进行语义搜索
+ * 2. 未配置 ACE API 时，使用本地关键词搜索
  */
 async function searchLogs({ query }) {
   if (!query || !String(query).trim()) {
     throw new Error('query 不能为空');
   }
 
-  if (!ACE_BASE_URL || !ACE_API_KEY) {
-    throw new Error('搜索功能需要配置 ACE_BASE_URL 和 ACE_API_KEY 环境变量');
+  const trimmedQuery = String(query).trim();
+
+  // 如果配置了 ACE API，使用 ACE 搜索
+  if (ACE_BASE_URL && ACE_API_KEY) {
+    return await searchLogsWithAce(trimmedQuery);
   }
 
+  // 否则使用本地搜索
+  return await searchLogsLocally(trimmedQuery);
+}
+
+/**
+ * 使用 ACE API 进行语义搜索
+ */
+async function searchLogsWithAce(query) {
   // 确保 base_url 使用 https
   let baseUrl = ACE_BASE_URL;
   if (baseUrl.startsWith('http://')) {
@@ -355,20 +369,45 @@ async function searchLogs({ query }) {
   }
   baseUrl = baseUrl.replace(/\/+$/, '');
 
-  // 调用 ACE API 进行搜索
-  const searchEndpoint = `${baseUrl}/v1/search`;
+  // 首先收集所有日志文件内容作为 blobs
+  const blobs = await collectLogBlobs();
+  
+  if (blobs.length === 0) {
+    return {
+      query,
+      results: '日志目录为空，没有可搜索的内容。',
+      logDir: LOG_DIR_NAME
+    };
+  }
+
+  // 调用 ACE codebase-retrieval API
+  const searchEndpoint = `${baseUrl}/agents/codebase-retrieval`;
   
   try {
+    const requestBody = {
+      information_request: query,
+      blobs: {
+        checkpoint_id: null,
+        added_blobs: blobs.map(b => b.hash),
+        deleted_blobs: []
+      },
+      dialog: [],
+      max_output_length: 0,
+      disable_codebase_retrieval: false,
+      enable_commit_retrieval: false
+    };
+
+    // 首先上传 blobs
+    await uploadBlobs(baseUrl, blobs);
+
     const response = await fetch(searchEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${ACE_API_KEY}`
+        'Authorization': `Bearer ${ACE_API_KEY}`,
+        'User-Agent': 'agent-log-server/1.0.0'
       },
-      body: JSON.stringify({
-        project_root_path: LOG_DIR_PATH,
-        query: String(query).trim()
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
@@ -379,8 +418,8 @@ async function searchLogs({ query }) {
     const result = await response.json();
     
     return {
-      query: String(query).trim(),
-      results: result.results || result.text || result,
+      query,
+      results: result.formatted_retrieval || '未找到相关内容。',
       logDir: LOG_DIR_NAME
     };
   } catch (error) {
@@ -389,6 +428,178 @@ async function searchLogs({ query }) {
     }
     throw error;
   }
+}
+
+/**
+ * 收集日志文件作为 blobs
+ */
+async function collectLogBlobs() {
+  let entries = [];
+
+  try {
+    entries = await fs.readdir(LOG_DIR_PATH, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  const blobs = [];
+  
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) {
+      continue;
+    }
+
+    const filePath = path.join(LOG_DIR_PATH, entry.name);
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      const hash = await calculateHash(entry.name, content);
+      blobs.push({
+        path: entry.name,
+        content,
+        hash
+      });
+    } catch {
+      // 忽略读取错误
+    }
+  }
+
+  return blobs;
+}
+
+/**
+ * 计算内容哈希
+ */
+async function calculateHash(filePath, content) {
+  const crypto = await import('node:crypto');
+  const hash = crypto.createHash('sha256');
+  hash.update(filePath);
+  hash.update(content);
+  return hash.digest('hex');
+}
+
+/**
+ * 上传 blobs 到 ACE API
+ */
+async function uploadBlobs(baseUrl, blobs) {
+  const uploadEndpoint = `${baseUrl}/batch-upload`;
+  
+  const uploadData = blobs.map(b => ({
+    path: b.path,
+    content: b.content
+  }));
+
+  const response = await fetch(uploadEndpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${ACE_API_KEY}`,
+      'User-Agent': 'agent-log-server/1.0.0'
+    },
+    body: JSON.stringify({ blobs: uploadData })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`上传 blobs 失败 (${response.status}): ${errorText}`);
+  }
+}
+
+/**
+ * 本地关键词搜索
+ */
+async function searchLogsLocally(query) {
+  let entries = [];
+
+  try {
+    entries = await fs.readdir(LOG_DIR_PATH, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        query,
+        results: '日志目录不存在。',
+        logDir: LOG_DIR_NAME
+      };
+    }
+    throw error;
+  }
+
+  const keywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
+  const matches = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) {
+      continue;
+    }
+
+    const filePath = path.join(LOG_DIR_PATH, entry.name);
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      const lowerContent = content.toLowerCase();
+      
+      // 检查是否包含所有关键词
+      const allMatch = keywords.every(k => lowerContent.includes(k));
+      if (!allMatch) {
+        continue;
+      }
+
+      // 提取匹配的上下文
+      const parsed = parseLogFileName(entry.name);
+      const title = extractTitleFromContent(content) || parsed?.title || '未知标题';
+      
+      // 找到第一个匹配的位置，提取周围的文本
+      const snippets = [];
+      for (const keyword of keywords) {
+        const idx = lowerContent.indexOf(keyword);
+        if (idx !== -1) {
+          const start = Math.max(0, idx - 50);
+          const end = Math.min(content.length, idx + keyword.length + 100);
+          const snippet = content.slice(start, end).replace(/\n/g, ' ').trim();
+          if (snippet && !snippets.includes(snippet)) {
+            snippets.push(`...${snippet}...`);
+          }
+        }
+      }
+
+      matches.push({
+        number: parsed?.number || 0,
+        fileName: entry.name,
+        title,
+        snippets: snippets.slice(0, 2) // 最多2个片段
+      });
+    } catch {
+      // 忽略读取错误
+    }
+  }
+
+  // 按编号降序排序（最新的在前）
+  matches.sort((a, b) => b.number - a.number);
+
+  // 格式化输出（类似 ace-tool-rs 的 formatted_retrieval 格式）
+  if (matches.length === 0) {
+    return {
+      query,
+      results: '未找到匹配的日志记录。',
+      logDir: LOG_DIR_NAME
+    };
+  }
+
+  const formattedResults = matches.map(m => {
+    let result = `## ${m.fileName}\n### ${m.title}\n`;
+    if (m.snippets.length > 0) {
+      result += '\n' + m.snippets.join('\n') + '\n';
+    }
+    return result;
+  }).join('\n---\n\n');
+
+  return {
+    query,
+    results: formattedResults,
+    matchCount: matches.length,
+    logDir: LOG_DIR_NAME
+  };
 }
 
 // ============================================================================
@@ -487,12 +698,17 @@ async function main() {
       title: '搜索历史日志',
       description: `**重要提示：当需要查找历史记录时，优先使用此工具进行搜索！**
 
-使用自然语言搜索历史日志记录。此工具调用 ACE 代码搜索引擎，支持语义搜索。
+使用自然语言搜索历史日志记录。支持两种搜索模式：
+
+## 搜索模式
+1. **ACE 语义搜索**（推荐）：配置 ACE_BASE_URL 和 ACE_API_KEY 后，使用 ACE 代码搜索引擎进行语义搜索
+2. **本地关键词搜索**：未配置 ACE API 时，使用本地关键词匹配搜索
 
 ## 使用场景
 - 当你需要查找之前做过的相关任务
 - 当你想了解某个功能的实现历史
 - 当你需要回顾之前的解决方案
+- **强烈建议在开始新任务前先搜索历史记录，避免重复工作**
 
 ## 查询示例
 - "查找关于数据库连接的日志"
@@ -500,8 +716,8 @@ async function main() {
 - "修复登录 bug 的记录"
 - "用户认证功能的实现过程"
 
-## 注意
-此工具需要配置 ACE_BASE_URL 和 ACE_API_KEY 环境变量。`,
+## 返回格式
+返回与 ace-tool-rs 一致的格式化搜索结果，包含文件路径和相关代码片段。`,
       inputSchema: {
         query: z.string().min(1).describe('自然语言搜索查询')
       },
