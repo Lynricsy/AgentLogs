@@ -1,6 +1,6 @@
 {
   "name": "mcp-agentlogs",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "MCP Agent 日志记录工具 - 支持日志记录、列表、查看和搜索功能",
   "main": "src/index.js",
   "bin": {
