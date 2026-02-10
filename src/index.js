@@ -20,7 +20,7 @@ const GITIGNORE_PATH = path.join(ROOT_DIR, '.gitignore');
 // ACE API 配置（用于搜索功能）
 const ACE_BASE_URL = process.env.ACE_BASE_URL || '';
 const ACE_API_KEY = process.env.ACE_API_KEY || '';
-const ACE_USER_AGENT = 'augment.cli/0.12.0/mcp';
+const ACE_USER_AGENT = 'augment.cli/0.12.0';
 const ACE_REQUEST_TIMEOUT_MS = getPositiveInt(process.env.ACE_REQUEST_TIMEOUT_MS, 30000);
 const ACE_MAX_LINES_PER_BLOB = getPositiveInt(process.env.ACE_MAX_LINES_PER_BLOB, 800);
 const ACE_MAX_BATCH_BYTES = 1024 * 1024;
