@@ -29,7 +29,7 @@ MCP Agent 日志记录工具是一个专为 AI Agent 设计的工作日志管理
 - 📝 **日志记录** - 自动生成递增编号的 Markdown 日志文件（`0001-标题.md` 格式）
 - 📋 **列出记录** - 获取所有历史日志的列表，包含编号、标题和创建时间
 - 👁️ **查看记录** - 读取指定编号或文件名的日志内容
-- 🔍 **智能搜索** - 使用自然语言搜索历史记录（需配置 ACE API）
+- 🔍 **智能搜索** - 使用自然语言搜索历史记录（支持 ACE API 或 fast-context）
 - 🔒 **自动 .gitignore** - 自动将日志目录加入 `.gitignore`，保护隐私
 - 🗂️ **可配置目录** - 支持通过环境变量自定义日志目录
 
@@ -104,9 +104,11 @@ npm run start:bun
 }
 ```
 
-### 启用 ACE 搜索功能
+### 启用语义搜索功能
 
-如需使用 `search-logs` 工具进行语义搜索，需要配置 ACE API：
+`search-logs` 支持两种语义搜索后端：ACE 或 fast-context。建议按部署环境二选一配置。
+
+#### ACE 模式
 
 ```json
 {
@@ -116,12 +118,37 @@ npm run start:bun
     "args": ["-y", "mcp-agentlogs@latest"],
     "env": {
       "AGENT_LOG_DIR": "AgentLogs",
+      "AGENT_LOG_SEARCH_PROVIDER": "ace",
       "ACE_BASE_URL": "https://your-ace-api-endpoint.com",
       "ACE_API_KEY": "your-api-key"
     }
   }
 }
 ```
+
+#### fast-context 模式
+
+fast-context 模式参考 [`@sammysnake/fast-context-mcp`](https://github.com/SammySnake-d/fast-context-mcp)，会将日志目录作为搜索根目录，通过 Windsurf/Devin API 进行语义检索。
+
+```json
+{
+  "agent-logs": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "mcp-agentlogs@latest"],
+    "env": {
+      "AGENT_LOG_DIR": "AgentLogs",
+      "AGENT_LOG_SEARCH_PROVIDER": "fast-context",
+      "WINDSURF_API_KEY": "sk-ws-01-xxxxx",
+      "FC_TREE_DEPTH": "3",
+      "FC_MAX_TURNS": "3",
+      "FC_MAX_RESULTS": "10"
+    }
+  }
+}
+```
+
+> `WINDSURF_API_KEY` 可省略，fast-context 会尝试从本机 Windsurf/Devin 登录状态自动发现凭据。未设置 `AGENT_LOG_SEARCH_PROVIDER` 时默认使用 `auto`：如果同时配置了 `ACE_BASE_URL` 和 `ACE_API_KEY`，优先使用 ACE；否则使用 fast-context。
 
 ## 🛠️ 工具说明
 
@@ -194,9 +221,9 @@ npm run start:bun
 
 ### `search-logs`
 
-使用自然语言搜索历史日志记录（仅支持 ACE 语义搜索）。
+使用自然语言搜索历史日志记录，支持 ACE 或 fast-context 语义搜索。
 
-> ⚠️ 此工具必须配置 ACE API（`ACE_BASE_URL` 和 `ACE_API_KEY`）
+> ⚠️ 需要通过 `AGENT_LOG_SEARCH_PROVIDER` 选择搜索后端，或使用默认 `auto` 规则自动选择。
 
 **输入参数：**
 
@@ -210,7 +237,7 @@ npm run start:bun
 - "之前做过哪些 API 相关的任务？"
 - "修复登录 bug 的记录"
 
-**输出：** 返回与 ace-tool 一致的格式化检索结果。
+**输出：** 返回格式化检索结果，并在结构化结果中包含本次使用的 `provider`。
 
 ---
 
@@ -219,10 +246,18 @@ npm run start:bun
 | 变量名 | 描述 | 默认值 |
 |--------|------|--------|
 | `AGENT_LOG_DIR` | 日志目录名称（相对于工作目录） | `AgentLogs` |
+| `AGENT_LOG_SEARCH_PROVIDER` | 搜索后端，可选 `auto`、`ace`、`fast-context` | `auto` |
 | `ACE_BASE_URL` | ACE 搜索 API 的基础 URL | - |
 | `ACE_API_KEY` | ACE 搜索 API 的认证密钥 | - |
 | `ACE_REQUEST_TIMEOUT_MS` | ACE 请求超时（毫秒） | `30000` |
 | `ACE_MAX_LINES_PER_BLOB` | 单个日志分块最大行数 | `800` |
+| `WINDSURF_API_KEY` | fast-context 使用的 Windsurf API Key（可自动发现） | - |
+| `FC_TREE_DEPTH` | fast-context 目录树深度，范围 `1-6` | `3` |
+| `FC_MAX_TURNS` | fast-context 搜索轮数，范围 `1-5` | `3` |
+| `FC_MAX_COMMANDS` | fast-context 每轮最大本地命令数，范围 `1-20` | `8` |
+| `FC_MAX_RESULTS` | fast-context 最大结果文件数，范围 `1-30` | `10` |
+| `FC_TIMEOUT_MS` | fast-context 请求超时（毫秒） | `30000` |
+| `FC_EXCLUDE_PATHS` | fast-context 排除路径，使用英文逗号分隔 | - |
 
 ## 📝 使用提示
 

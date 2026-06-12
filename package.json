@@ -1,6 +1,6 @@
 {
   "name": "mcp-agentlogs",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "MCP Agent 日志记录工具 - 支持日志记录、列表、查看和搜索功能",
   "main": "src/index.js",
   "bin": {
@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",
+    "@sammysnake/fast-context-mcp": "^1.2.2",
     "zod": "^4.3.5"
   }
 }
