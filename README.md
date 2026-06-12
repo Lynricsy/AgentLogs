@@ -237,7 +237,7 @@ fast-context 模式参考 [`@sammysnake/fast-context-mcp`](https://github.com/Sa
 - "之前做过哪些 API 相关的任务？"
 - "修复登录 bug 的记录"
 
-**输出：** 返回格式化检索结果，并在结构化结果中包含本次使用的 `provider`。
+**输出：** 返回格式化检索结果，并在结构化结果中包含本次使用的 `provider`。fast-context 模式会过滤不存在、越界或非 Markdown 日志文件的候选结果，只展示真实日志文件。
 
 ---
 

@@ -517,12 +517,101 @@ async function searchLogsWithFastContext(query) {
     result = buildFastContextThrownError(error);
   }
 
+  result = await filterFastContextLogFiles(result);
+
   return {
     query,
     results: formatFastContextResult(result),
     logDir: LOG_DIR_NAME,
     provider: 'fast-context'
   };
+}
+
+/**
+ * 过滤 fast-context 返回的非日志文件候选
+ */
+async function filterFastContextLogFiles(result) {
+  if (result?.error || !Array.isArray(result?.files)) {
+    return result;
+  }
+
+  const validFiles = [];
+  let filteredCount = 0;
+  const seenPaths = new Set();
+  const realLogDir = await fs.realpath(LOG_DIR_PATH);
+
+  for (const entry of result.files) {
+    const filePath = await resolveExistingLogFilePath(entry, realLogDir);
+    if (!filePath) {
+      filteredCount += 1;
+      continue;
+    }
+
+    if (seenPaths.has(filePath)) {
+      filteredCount += 1;
+      continue;
+    }
+
+    seenPaths.add(filePath);
+    validFiles.push({
+      ...entry,
+      full_path: filePath
+    });
+  }
+
+  return {
+    ...result,
+    files: validFiles,
+    _filteredFiles: filteredCount
+  };
+}
+
+/**
+ * 将 fast-context 候选路径解析为真实日志文件路径
+ */
+async function resolveExistingLogFilePath(entry, realLogDir) {
+  const rawPath = String(entry?.full_path ?? entry?.path ?? '').trim();
+  if (!rawPath) {
+    return null;
+  }
+
+  const absolutePath = resolveFastContextCandidatePath(rawPath);
+
+  let stat;
+  let realPath;
+  try {
+    stat = await fs.stat(absolutePath);
+    realPath = await fs.realpath(absolutePath);
+  } catch {
+    return null;
+  }
+
+  if (!stat.isFile() || !realPath.endsWith('.md')) {
+    return null;
+  }
+
+  const relativeToLogDir = path.relative(realLogDir, realPath);
+  if (!relativeToLogDir || relativeToLogDir.startsWith('..') || path.isAbsolute(relativeToLogDir)) {
+    return null;
+  }
+
+  return realPath;
+}
+
+/**
+ * 解析 fast-context 返回的候选路径
+ */
+function resolveFastContextCandidatePath(rawPath) {
+  if (path.isAbsolute(rawPath)) {
+    return rawPath;
+  }
+
+  const normalizedRawPath = rawPath.replace(/\\/g, '/');
+  if (normalizedRawPath === LOG_DIR_NAME || normalizedRawPath.startsWith(`${LOG_DIR_NAME}/`)) {
+    return path.resolve(ROOT_DIR, rawPath);
+  }
+
+  return path.resolve(LOG_DIR_PATH, rawPath);
 }
 
 /**
@@ -603,6 +692,11 @@ function formatFastContextResult(result) {
   if (patterns.length > 0) {
     parts.push('');
     parts.push(`建议后续关键词：${patterns.join(', ')}`);
+  }
+
+  if (result?._filteredFiles > 0) {
+    parts.push('');
+    parts.push(`已过滤 ${result._filteredFiles} 个不存在、越界或非 Markdown 日志的候选结果。`);
   }
 
   const meta = result?._meta;
