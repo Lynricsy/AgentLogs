@@ -1,77 +1,55 @@
-# 🐱 MCP Agent 日志记录工具
+# MCP Agent 日志记录工具
 
-<p align="center">
-  <strong>一个基于 Model Context Protocol (MCP) 的 Agent 工作日志管理工具</strong>
-</p>
+一个基于 Model Context Protocol（MCP）的项目本地 Agent 工作日志服务。Markdown 是唯一事实源；SQLite、词法统计和向量均为可删除、可重建的派生索引。
 
-<p align="center">
-  <a href="#功能特性">功能特性</a> •
-  <a href="#快速开始">快速开始</a> •
-  <a href="#工具说明">工具说明</a> •
-  <a href="#配置说明">配置说明</a> •
-  <a href="#许可证">许可证</a>
-</p>
+## 功能
 
----
+- 以 `0001-标题.md` 格式记录递增编号日志。
+- 在 H1 后持久化 `agentlogs-meta:v1`，记录类型、标签、工件、修订关系和创建时间。
+- 使用中文 BM25、可选 OpenAI-compatible embedding、类型、时间与关系通道混合召回。
+- 使用 RRF 融合、可选通用 Rerank API 和 MMR 多样性选择。
+- 返回真实 Markdown 行号、召回信号、修订状态与降级诊断。
+- 所有运行时数据严格保存在当前项目的存储目录内。
+- 支持 Node.js 24 LTS 和 Bun。
 
-## 📖 概述
+## 要求
 
-MCP Agent 日志记录工具是一个专为 AI Agent 设计的工作日志管理 MCP 服务器。它提供了简单而强大的日志记录、查询和搜索功能，帮助 Agent 和用户追踪工作历史、回顾任务进度。
+- Node.js >= 24.0.0，或兼容当前依赖的 Bun。
+- MCP 客户端必须以目标项目目录作为服务器工作目录。
 
-### 为什么需要这个工具？
-
-- **任务追踪**：自动记录 Agent 的每个工作阶段，便于回溯和审查
-- **知识沉淀**：将工作过程中的关键信息保存为可检索的文档
-- **历史查询**：支持列出、查看和搜索历史记录，快速定位所需信息
-
-## ✨ 功能特性
-
-- 📝 **日志记录** - 自动生成递增编号的 Markdown 日志文件（`0001-标题.md` 格式）
-- 📋 **列出记录** - 获取所有历史日志的列表，包含编号、标题和创建时间
-- 👁️ **查看记录** - 读取指定编号或文件名的日志内容
-- 🔍 **智能搜索** - 使用自然语言搜索历史记录（支持 ACE API 或 fast-context）
-- 🔒 **自动 .gitignore** - 自动将日志目录加入 `.gitignore`，保护隐私
-- 🗂️ **可配置目录** - 支持通过环境变量自定义日志目录
-
-## 🚀 快速开始
-
-### 使用 npx（推荐）
+## 快速开始
 
 ```bash
 npx mcp-agentlogs@latest
-```
-
-### 使用 bunx
-
-```bash
+# 或
 bunx mcp-agentlogs@latest
 ```
 
-### 从源码运行
+从源码运行：
 
 ```bash
-# 克隆仓库
-git clone https://github.com/Lynricsy/AgentLogs.git
-cd AgentLogs
-
-# 安装依赖
-npm install
-
-# 使用 Node.js 运行
+npm ci
 npm start
-
-# 或使用 Bun 运行
+# Bun
 npm run start:bun
 ```
 
-## 🔧 MCP 配置
+## MCP 配置
 
-### Claude Desktop 配置
+默认无需环境变量：
 
-在 Claude Desktop 配置文件中添加：
+```json
+{
+  "mcpServers": {
+    "agent-logs": {
+      "command": "npx",
+      "args": ["-y", "mcp-agentlogs@latest"]
+    }
+  }
+}
+```
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+### 启用向量与模型重排
 
 ```json
 {
@@ -80,245 +58,146 @@ npm run start:bun
       "command": "npx",
       "args": ["-y", "mcp-agentlogs@latest"],
       "env": {
-        "AGENT_LOG_DIR": "AgentLogs"
+        "AGENT_LOG_EMBEDDING_API_URL": "https://api.example.com/v1",
+        "AGENT_LOG_EMBEDDING_API_KEY": "embedding-key",
+        "AGENT_LOG_EMBEDDING_MODEL": "multilingual-embedding",
+        "AGENT_LOG_RERANK_API_URL": "https://api.example.com/v1/rerank?tenant=project",
+        "AGENT_LOG_RERANK_API_KEY": "reranker-key",
+        "AGENT_LOG_RERANK_MODEL": "multilingual-reranker"
       }
     }
   }
 }
 ```
 
-### Cursor 配置
-
-在 MCP 配置文件中添加：
+Embedding URL 必须是绝对 `http:` 或 `https:` URL。若最后一个路径段不是 `embeddings`，服务会追加 `/embeddings`。请求与 OpenAI-compatible `/embeddings` 契约一致：
 
 ```json
-{
-  "agent-logs": {
-    "type": "stdio",
-    "command": "bunx",
-    "args": ["-y", "mcp-agentlogs@latest"],
-    "env": {
-      "AGENT_LOG_DIR": "AgentLogs"
-    }
-  }
-}
+{ "model": "...", "input": ["..."] }
 ```
 
-### 启用语义搜索功能
-
-`search-logs` 支持两种语义搜索后端：ACE 或 fast-context。建议按部署环境二选一配置。
-
-#### ACE 模式
+Rerank URL 必须是完整的绝对 endpoint；服务不会追加路径。请求固定为 Cohere、Jina、SiliconFlow 与 Voyage 共同子集：
 
 ```json
-{
-  "agent-logs": {
-    "type": "stdio",
-    "command": "npx",
-    "args": ["-y", "mcp-agentlogs@latest"],
-    "env": {
-      "AGENT_LOG_DIR": "AgentLogs",
-      "AGENT_LOG_SEARCH_PROVIDER": "ace",
-      "ACE_BASE_URL": "https://your-ace-api-endpoint.com",
-      "ACE_API_KEY": "your-api-key"
-    }
-  }
-}
+{ "model": "...", "query": "...", "documents": ["..."] }
 ```
 
-#### fast-context 模式
+服务接受 `results[]` 或 `data[]`，每项必须包含完整且不重复的 `index` 与有限数值 `relevance_score`。Reranker 只重排五路召回前 30 个 chunk，不能新增候选，失败时完整回退初始 RRF。
 
-fast-context 模式参考 [`@sammysnake/fast-context-mcp`](https://github.com/SammySnake-d/fast-context-mcp)，会将日志目录作为搜索根目录，通过 Windsurf/Devin API 进行语义检索。
+Embedding 与 Reranker 配置、超时和密钥完全独立。只配置 URL 或模型时，对应能力关闭并产生诊断 warning；词法搜索始终可用。
 
-```json
-{
-  "agent-logs": {
-    "type": "stdio",
-    "command": "npx",
-    "args": ["-y", "mcp-agentlogs@latest"],
-    "env": {
-      "AGENT_LOG_DIR": "AgentLogs",
-      "AGENT_LOG_SEARCH_PROVIDER": "fast-context",
-      "WINDSURF_API_KEY": "sk-ws-01-xxxxx",
-      "FC_TREE_DEPTH": "3",
-      "FC_MAX_TURNS": "3",
-      "FC_MAX_RESULTS": "10"
-    }
-  }
-}
+## 项目本地存储与迁移
+
+默认存储目录是项目根下 `.agent-logs/`。`AGENT_LOG_DIR` 只接受项目内非 `.` 相对路径；绝对路径、`..` 逃逸和符号链接路径会使服务启动失败。
+
+以下值都使用默认布局并参与旧目录迁移：
+
+- 未设置或空值；
+- `.agent-logs`；
+- 旧字面量 `AgentLogs`。
+
+启动时若只有旧 `AgentLogs/`，服务会用同文件系统原子 `rename` 为 `.agent-logs/`。若新旧目录同时存在，服务拒绝启动，不复制、不合并、不覆盖。显式的其他项目内相对目录不会探测旧目录。
+
+存储目录包含：
+
+```text
+.agent-logs/
+├── 0001-任务标题.md
+├── index.sqlite
+├── index.lock                         # 仅持锁期间存在
+├── index.<pid>.<uuid>.tmp             # 仅原子导出期间存在
+└── index.corrupt-<timestamp>.sqlite   # 损坏索引诊断副本
 ```
 
-> `WINDSURF_API_KEY` 可省略，fast-context 会尝试从本机 Windsurf/Devin 登录状态自动发现凭据。未设置 `AGENT_LOG_SEARCH_PROVIDER` 时默认使用 `auto`：如果同时配置了 `ACE_BASE_URL` 和 `ACE_API_KEY`，优先使用 ACE；否则使用 fast-context。
+Markdown 是唯一不可替代数据。删除 `index.sqlite` 后，下次搜索会从 Markdown 全量重建。锁超时、索引损坏或持久化失败不会改写 Markdown，也不会使用项目外临时目录。
 
-## 🛠️ 工具说明
+## 工具
 
 ### `record-agent-log`
 
-记录 Agent 工作日志，生成递增编号的 Markdown 文件。
+输入：
 
-**输入参数：**
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `title` | string | 必需，日志标题 |
+| `content` | string | Markdown 正文 |
+| `types` | enum[] | 最多 10 项：`decision`、`rationale`、`learning`、`error`、`verification`、`config`、`artifact`、`event`、`context`、`action` |
+| `tags` | string[] | 最多 32 项，每项 1–64 字符 |
+| `artifacts` | string[] | 最多 32 项，每项 1–256 字符 |
+| `relations` | object[] | 最多 16 项，`type` 为 `supersedes`、`corrects`、`follows_up`、`validates`、`releases`，`target` 是现存完整日志文件名 |
 
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
-| `title` | string | ✅ | 工作内容标题 |
-| `content` | string | ❌ | 工作记录内容（Markdown 格式） |
+数组按第一次出现顺序去重。关系目标必须是存储目录内现存的普通 Markdown 文件。
 
-**输出：**
+新日志格式：
 
-```json
-{
-  "filePath": "/path/to/AgentLogs/0001-任务标题.md",
-  "fileName": "0001-任务标题.md",
-  "number": 1,
-  "logDir": "AgentLogs"
-}
+```markdown
+# 标题
+
+<!-- agentlogs-meta:v1
+{"version":1,"createdAt":"2026-07-29T00:00:00.000Z","types":["decision"],"tags":["中文检索"],"artifacts":["src/index.js"],"relations":[]}
+-->
+
+正文
 ```
+
+只有紧跟 H1（允许空行）的第一个有效 metadata 块具有结构化权限。旧日志没有 metadata 时仍可读取和索引，创建时间由文件系统时间派生。
 
 ### `list-logs`
 
-列出所有历史日志记录。
-
-**输入参数：** 无
-
-**输出：**
-
-```json
-{
-  "logs": [
-    {
-      "number": 1,
-      "fileName": "0001-任务标题.md",
-      "title": "任务标题",
-      "createdAt": "2025-01-19T12:00:00.000Z"
-    }
-  ],
-  "total": 1,
-  "logDir": "AgentLogs"
-}
-```
+返回编号、文件名、标题、创建时间和标准化 `metadata`。
 
 ### `read-log`
 
-读取指定日志的内容。
-
-**输入参数：**
-
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
-| `identifier` | string/number | ✅ | 日志编号（如 `1` 或 `"1"`）或文件名（如 `"0001-任务标题.md"`） |
-
-**输出：**
-
-```json
-{
-  "number": 1,
-  "fileName": "0001-任务标题.md",
-  "title": "任务标题",
-  "content": "# 任务标题\n\n日志内容...",
-  "createdAt": "2025-01-19T12:00:00.000Z"
-}
-```
+按编号或完整文件名返回原始 Markdown。`content` 保留 metadata 注释，同时返回标准化 `metadata`。
 
 ### `search-logs`
 
-使用自然语言搜索历史日志记录，支持 ACE 或 fast-context 语义搜索。
+`query` trim 后必须为 1–4000 字符。顶层 `provider` 固定为 `hybrid`；这表示唯一搜索实现，不代表每次都成功使用向量。
 
-> ⚠️ 需要通过 `AGENT_LOG_SEARCH_PROVIDER` 选择搜索后端，或使用默认 `auto` 规则自动选择。
+结构化返回包含：
 
-**输入参数：**
+- `matches[]`：项目相对路径、标题、章节、真实物理行范围、摘要、相关度、类型、标签、工件、修订来源；
+- `signals`：词法、语义、类型、时间、关系和 Rerank 的 rank/score；
+- `diagnostics.mode`：只有查询向量成功且至少一个当前模型语料向量参与排名时为 `hybrid`，否则为 `lexical-only`；
+- `diagnostics.warnings`：索引、metadata、断裂关系、embedding 与 Reranker 的安全降级原因。
 
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
-| `query` | string | ✅ | 自然语言搜索查询 |
+时间通道只在查询明确包含最近、今天、日期等时间意图时启用；普通查询不会衰减旧日志。`corrects`/`supersedes` 的旧目标默认降权，查询明确要求历史或旧方案时保留原权重。
 
-**查询示例：**
+## 环境变量
 
-- "查找关于数据库连接的日志"
-- "之前做过哪些 API 相关的任务？"
-- "修复登录 bug 的记录"
+| 变量 | 默认值 | 约束 |
+|---|---:|---|
+| `AGENT_LOG_DIR` | `.agent-logs` | 仅项目内相对目录 |
+| `AGENT_LOG_EMBEDDING_API_URL` | 空 | URL 与模型同时非空才启用 |
+| `AGENT_LOG_EMBEDDING_API_KEY` | 空 | 可选，不落盘 |
+| `AGENT_LOG_EMBEDDING_MODEL` | 空 | URL 与模型同时非空才启用 |
+| `AGENT_LOG_EMBEDDING_TIMEOUT_MS` | `30000` | `1000..300000` |
+| `AGENT_LOG_EMBEDDING_BATCH_SIZE` | `32` | `1..128` |
+| `AGENT_LOG_RERANK_API_URL` | 空 | 完整 endpoint；与模型同时非空才启用 |
+| `AGENT_LOG_RERANK_API_KEY` | 空 | 可选，不继承 embedding key，不落盘 |
+| `AGENT_LOG_RERANK_MODEL` | 空 | URL 与模型同时非空才启用 |
+| `AGENT_LOG_RERANK_TIMEOUT_MS` | `10000` | `1000..60000` |
+| `AGENT_LOG_SEARCH_MAX_RESULTS` | `5` | `1..20` |
 
-**输出：** 返回格式化检索结果，并在结构化结果中包含本次使用的 `provider`。fast-context 模式会过滤不存在、越界或非 Markdown 日志文件的候选结果，只展示真实日志文件。
+## 外发内容与隐私
 
----
+启用 embedding 时，服务只发送 trim 后的查询和每个 chunk 的有界 `search_text`；超过 4096 字符的文本保留首尾。不会发送完整 Markdown 文件、数据库、关系图或索引元数据。
 
-## ⚙️ 环境变量
+启用 Reranker 时，服务最多发送 30 个候选字符串。每个字符串包含项目相对文件名、标题、章节、创建时间、类型、标签、工件和该 chunk 的 `search_text`。Rerank 分数只存在于当前查询内，不写 SQLite、不写磁盘缓存。
 
-| 变量名 | 描述 | 默认值 |
-|--------|------|--------|
-| `AGENT_LOG_DIR` | 日志目录名称（相对于工作目录） | `AgentLogs` |
-| `AGENT_LOG_SEARCH_PROVIDER` | 搜索后端，可选 `auto`、`ace`、`fast-context` | `auto` |
-| `ACE_BASE_URL` | ACE 搜索 API 的基础 URL | - |
-| `ACE_API_KEY` | ACE 搜索 API 的认证密钥 | - |
-| `ACE_REQUEST_TIMEOUT_MS` | ACE 请求超时（毫秒） | `30000` |
-| `ACE_MAX_LINES_PER_BLOB` | 单个日志分块最大行数 | `800` |
-| `WINDSURF_API_KEY` | fast-context 使用的 Windsurf API Key（可自动发现） | - |
-| `FC_TREE_DEPTH` | fast-context 目录树深度，范围 `1-6` | `3` |
-| `FC_MAX_TURNS` | fast-context 搜索轮数，范围 `1-5` | `3` |
-| `FC_MAX_COMMANDS` | fast-context 每轮最大本地命令数，范围 `1-20` | `8` |
-| `FC_MAX_RESULTS` | fast-context 最大结果文件数，范围 `1-30` | `10` |
-| `FC_TIMEOUT_MS` | fast-context 请求超时（毫秒） | `30000` |
-| `FC_EXCLUDE_PATHS` | fast-context 排除路径，使用英文逗号分隔 | - |
+API key 只通过请求头发送，不写磁盘、不进入模型 key、warning 或结构化结果。查询向量只保存在最多 256 项的进程内 LRU 中。
 
-## 📝 使用提示
+## 开发与验证
 
-### 推荐给 Agent 的提示词
-
-在你的 Agent 系统提示词中加入以下内容，以便更好地利用此工具：
-
-```
-## 日志记录与查找规则
-
-1. 使用 `record-agent-log` 记录工作，不直接创建/编辑日志文件
-2. 通过 `list-logs` 获取历史列表，不直接浏览 AgentLogs 目录
-3. 通过 `read-log` 查看内容，不直接打开日志文件
-4. **查找历史记录时优先使用 `search-logs`，禁止使用关键词手动搜索文件**
-5. 对于大型复杂任务，每完成一个小阶段或重要节点就记录一次
+```bash
+npm ci
+node --check src/index.js
+npm test
+npm pack --dry-run
 ```
 
-## 🔐 安全说明
+Vitest 使用仓库内 `.agent-logs-test-workspaces/`，不使用系统临时目录。发布工作流在 `npm ci` 后、`npm publish` 前执行完整测试。
 
-- 日志目录会自动添加到 `.gitignore`，避免敏感信息被提交到版本控制
-- 日志目录必须位于当前工作目录内，防止写入外部路径
-- 文件名会自动清理特殊字符，确保跨平台兼容性
+## 许可证
 
-## 🔄 版本发布
-
-本项目使用 GitHub Actions 自动发布到 npm。
-
-### 发布新版本
-
-1. 更新 `package.json` 中的版本号
-2. 提交更改：`git commit -am "chore: bump version to x.x.x"`
-3. 创建标签：`git tag vx.x.x`
-4. 推送标签：`git push origin vx.x.x`
-
-GitHub Actions 将自动：
-- 发布包到 npm
-- 创建 GitHub Release
-
-## 🤝 贡献
-
-欢迎贡献代码！请遵循以下步骤：
-
-1. Fork 本仓库
-2. 创建功能分支：`git checkout -b feature/amazing-feature`
-3. 提交更改：`git commit -m ':sparkles: feat: add amazing feature'`
-4. 推送分支：`git push origin feature/amazing-feature`
-5. 创建 Pull Request
-
-### 提交规范
-
-使用 [Gitmoji](https://gitmoji.dev/) + Conventional Commits 格式：
-
-- `:tada:` `:sparkles:` `:bug:` `:memo:` 等表情符号
-- `feat:` `fix:` `docs:` `chore:` 等类型前缀
-
-## 📄 许可证
-
-ISC License
-
----
-
-<p align="center">
-  Made with 💜 by <a href="https://github.com/Lynricsy">Lynricsy</a>
-</p>
+ISC

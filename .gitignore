@@ -1,3 +1,6 @@
 .ace-tool/
 AgentLogs/
+.agent-logs/
+.agent-logs-test-workspaces/
+.agent-logs-smoke-*/
 node_modules/

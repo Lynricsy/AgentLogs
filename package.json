@@ -1,14 +1,16 @@
 {
   "name": "mcp-agentlogs",
-  "version": "1.0.4",
-  "description": "MCP Agent 日志记录工具 - 支持日志记录、列表、查看和搜索功能",
+  "version": "2.0.0",
+  "description": "MCP Agent 日志记录工具 - 支持日志记录、列表、查看和混合搜索功能",
   "main": "src/index.js",
   "bin": {
     "mcp-agentlogs": "src/index.js"
   },
   "scripts": {
     "start": "node \"src/index.js\"",
-    "start:bun": "bun \"src/index.js\""
+    "start:bun": "bun \"src/index.js\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "mcp",
@@ -36,11 +38,14 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",
-    "@sammysnake/fast-context-mcp": "^1.2.2",
+    "sql.js": "^1.14.0",
     "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.6"
   }
 }

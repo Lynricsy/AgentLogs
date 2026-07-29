@@ -32,5 +32,8 @@ jobs:
         if: github.event.inputs.version
         run: npm version ${{ github.event.inputs.version }} --no-git-tag-version
 
+      - name: Test
+        run: npm test
+
       - name: Publish to NPM
         run: npm publish --access public --provenance
