@@ -204,6 +204,14 @@ describe('真实 stdio MCP', () => {
       expect(rerankRequest.headers.authorization).toBe('Bearer reranker-secret');
       expect(rerankRequest.body.documents[0]).toContain('文件: .agent-logs/');
       expect(rerankRequest.body).not.toHaveProperty('top_n');
+      expect(rerankRequest.body.documents.length).toBeLessThanOrEqual(30);
+      const rerankFileCounts = new Map();
+      for (const document of rerankRequest.body.documents) {
+        const fileName = document.match(/^文件: \.agent-logs\/(.+)$/m)?.[1];
+        rerankFileCounts.set(fileName, (rerankFileCounts.get(fileName) ?? 0) + 1);
+      }
+      expect(Math.max(...rerankFileCounts.values())).toBeLessThanOrEqual(2);
+      expect(new Set(reranked.matches.map((match) => match.fileName)).size).toBe(reranked.matches.length);
 
       const correction = await call(client, 'record-agent-log', {
         title: '修正旧决策',
@@ -272,7 +280,7 @@ describe('真实 stdio MCP', () => {
     }
   });
 
-  test('Reranker 只接收初始前 30 个候选且只请求一次', async () => {
+  test('Reranker 只接收 Top 30 内每文档最多两个 chunk 且只请求一次', async () => {
     const cwd = await fs.mkdtemp(path.join(workspaceParent, 'cap-'));
     requests.length = 0;
     rerankMode = 'normal';
@@ -283,7 +291,7 @@ describe('真实 stdio MCP', () => {
       await call(client, 'search-logs', { query: 'CAP_UNIQUE_TOKEN' });
       const rerankRequests = requests.filter((request) => request.url === '/custom/rerank?tenant=test');
       expect(rerankRequests).toHaveLength(1);
-      expect(rerankRequests[0].body.documents).toHaveLength(30);
+      expect(rerankRequests[0].body.documents).toHaveLength(2);
     } finally {
       await client.close().catch(() => {});
     }

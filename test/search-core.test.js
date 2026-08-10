@@ -3,12 +3,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   decodeFloat32Le,
+  buildRerankVoice,
+  deduplicateRankingByDocument,
   encodeFloat32Le,
   fuseRankings,
   normalizeRerankResponse,
   parseAgentLog,
   resolveStorageLayout,
   scoreBm25Candidates,
+  selectRerankCandidates,
   selectWithMmr,
   splitLogIntoChunks,
   tokenizeSearchText,
@@ -133,6 +136,46 @@ describe('融合、Rerank、MMR 与向量编码', () => {
     expect(fuseRankings(base)[0].id).toBe('a');
     expect(fuseRankings([...base, { weight: 2, items: ['b', 'a'] }])[0].id).toBe('b');
     expect(fuseRankings(base)).toEqual(fuseRankings(base));
+  });
+
+  test('重排只接收 Top 30 内每文档最多两个 chunk，并只融合前 15 名', () => {
+    const chunks = Array.from({ length: 35 }, (_, index) => ({
+      id: `chunk-${index}`,
+      documentPath: index < 4 ? 'repeated.md' : `document-${index}.md`,
+    }));
+    const index = { byId: new Map(chunks.map((chunk) => [chunk.id, chunk])) };
+    const ranking = chunks.map((chunk, rank) => ({ id: chunk.id, score: 100 - rank }));
+    const candidates = selectRerankCandidates(ranking, index);
+    expect(candidates).toHaveLength(28);
+    expect(candidates.map((candidate) => candidate.id)).toEqual(expect.arrayContaining(['chunk-0', 'chunk-1', 'chunk-29']));
+    expect(candidates.map((candidate) => candidate.id)).not.toEqual(expect.arrayContaining(['chunk-2', 'chunk-3', 'chunk-30']));
+
+    const reranked = candidates.map((_, rank) => ({
+      index: candidates.length - rank - 1,
+      score: candidates.length - rank,
+      rank: rank + 1,
+    }));
+    const voice = buildRerankVoice(reranked, candidates);
+    expect(voice).toHaveLength(15);
+    expect(voice[0].id).toBe(candidates.at(-1).id);
+    expect(voice.at(-1).id).toBe(candidates.at(-15).id);
+  });
+
+  test('文档聚合按当前排名只保留最高分 chunk', () => {
+    const chunks = [
+      { id: 'a1', documentPath: 'a.md' },
+      { id: 'a2', documentPath: 'a.md' },
+      { id: 'b1', documentPath: 'b.md' },
+    ];
+    const index = { byId: new Map(chunks.map((chunk) => [chunk.id, chunk])) };
+    expect(deduplicateRankingByDocument([
+      { id: 'a2', score: 3 },
+      { id: 'b1', score: 2 },
+      { id: 'a1', score: 1 },
+    ], index)).toEqual([
+      { id: 'a2', score: 3 },
+      { id: 'b1', score: 2 },
+    ]);
   });
 
   test.each(['results', 'data'])('%s envelope 规范化且并列稳定', (field) => {

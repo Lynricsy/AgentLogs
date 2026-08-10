@@ -26,6 +26,9 @@ const INDEX_SCHEMA_VERSION = '1';
 const MAX_CHUNK_CHARS = 1800;
 const CHUNK_OVERLAP_CHARS = 200;
 const QUERY_VECTOR_CACHE_LIMIT = 256;
+const RERANK_CANDIDATE_LIMIT = 30;
+const RERANK_MAX_CHUNKS_PER_DOCUMENT = 2;
+const RERANK_FUSION_LIMIT = 15;
 const STOPWORDS_ZH = new Set(['的', '了', '和', '是', '在', '对', '与', '及', '把', '将', '中', '呢', '吗', '什么', '怎么', '如何', '是否']);
 const STOPWORDS_EN = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'how', 'i', 'in', 'is', 'it',
@@ -1262,6 +1265,35 @@ export function normalizeRerankResponse(payload, candidateCount) {
     .map((row, rank) => ({ index: row.index, score: row.relevance_score, rank: rank + 1 }));
 }
 
+/** @internal 截取前 30 个基础候选，并限制每篇文档最多两个 chunk 进入重排。 */
+export function selectRerankCandidates(ranking, index) {
+  const perDocument = new Map();
+  return ranking.slice(0, RERANK_CANDIDATE_LIMIT).filter((entry) => {
+    const documentPath = index.byId.get(entry.id).documentPath;
+    const count = perDocument.get(documentPath) ?? 0;
+    if (count >= RERANK_MAX_CHUNKS_PER_DOCUMENT) return false;
+    perDocument.set(documentPath, count + 1);
+    return true;
+  });
+}
+
+/** @internal 只把重排前 15 名作为第六路 RRF 信号。 */
+export function buildRerankVoice(reranked, candidates) {
+  return reranked.slice(0, RERANK_FUSION_LIMIT)
+    .map((entry) => ({ id: candidates[entry.index].id, score: entry.score }));
+}
+
+/** @internal 按当前排序为每篇文档保留分数最高的一个 chunk。 */
+export function deduplicateRankingByDocument(ranking, index) {
+  const documents = new Set();
+  return ranking.filter((entry) => {
+    const documentPath = index.byId.get(entry.id).documentPath;
+    if (documents.has(documentPath)) return false;
+    documents.add(documentPath);
+    return true;
+  });
+}
+
 function tokenJaccard(left, right) {
   const leftSet = left instanceof Set ? left : new Set(left);
   const rightSet = right instanceof Set ? right : new Set(right);
@@ -1490,18 +1522,24 @@ async function searchLogs({ query }) {
     }
     const initial = fuseRankings(baseVoices).sort((a, b) => b.score - a.score
       || index.byId.get(a.id).documentPath.localeCompare(index.byId.get(b.id).documentPath)
-      || index.byId.get(a.id).startLine - index.byId.get(b.id).startLine).slice(0, 30);
-    const rerankerAttempted = Boolean(REMOTE_CONFIG.reranker && initial.length >= 2);
-    const reranked = await requestRerank(normalizedQuery, initial, index, synchronized.warnings);
+      || index.byId.get(a.id).startLine - index.byId.get(b.id).startLine)
+      .slice(0, RERANK_CANDIDATE_LIMIT);
+    const rerankCandidates = selectRerankCandidates(initial, index);
+    const rerankerAttempted = Boolean(REMOTE_CONFIG.reranker && rerankCandidates.length >= 2);
+    const reranked = await requestRerank(normalizedQuery, rerankCandidates, index, synchronized.warnings);
     let fused = initial;
     if (reranked) {
-      const rerankItems = reranked.map((entry) => ({ id: initial[entry.index].id, score: entry.score }));
-      rerankItems.forEach((entry, rank) => {
+      const rankedItems = reranked.map((entry) => ({
+        id: rerankCandidates[entry.index].id,
+        score: entry.score,
+      }));
+      rankedItems.forEach((entry, rank) => {
         if (!voiceRanks.has(entry.id)) voiceRanks.set(entry.id, {});
         voiceRanks.get(entry.id).rerank = { rank: rank + 1, score: entry.score };
       });
-      fused = fuseRankings([...baseVoices, { name: 'rerank', weight: 2, items: rerankItems }])
-        .filter((entry) => initial.some((candidate) => candidate.id === entry.id));
+      const initialIds = new Set(initial.map((candidate) => candidate.id));
+      fused = fuseRankings([...baseVoices, { name: 'rerank', weight: 2, items: buildRerankVoice(reranked, rerankCandidates) }])
+        .filter((entry) => initialIds.has(entry.id));
     }
 
     const historyQuery = /过程|历史|旧方案|原方案|曾经|\bhistory\b|\bold\b|\bprevious\b/i.test(normalizedQuery);
@@ -1519,6 +1557,7 @@ async function searchLogs({ query }) {
     }).sort((a, b) => b.score - a.score
       || index.byId.get(a.id).documentPath.localeCompare(index.byId.get(b.id).documentPath)
       || index.byId.get(a.id).startLine - index.byId.get(b.id).startLine);
+    fused = deduplicateRankingByDocument(fused, index);
 
     const highest = fused[0]?.score || 1;
     const candidates = fused.map((entry) => {
@@ -1572,7 +1611,7 @@ async function searchLogs({ query }) {
       embeddingModel: REMOTE_CONFIG.embedding?.model ?? null,
       rerankerModel: REMOTE_CONFIG.reranker?.model ?? null,
       rerankerApplied: Boolean(reranked),
-      rerankedCandidates: reranked ? initial.length : 0,
+      rerankedCandidates: reranked ? rerankCandidates.length : 0,
       rerankerAttempted,
       warnings: uniqueWarnings(synchronized.warnings),
     };

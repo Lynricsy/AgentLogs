@@ -7,7 +7,7 @@
 - 以 `0001-标题.md` 格式记录递增编号日志。
 - 在 H1 后持久化 `agentlogs-meta:v1`，记录类型、标签、工件、修订关系和创建时间。
 - 使用中文 BM25、可选 OpenAI-compatible embedding、类型、时间与关系通道混合召回。
-- 使用 RRF 融合、可选通用 Rerank API 和 MMR 多样性选择。
+- 使用 RRF 融合、可选通用 Rerank API、文档级聚合和 MMR 多样性选择。
 - 返回真实 Markdown 行号、召回信号、修订状态与降级诊断。
 - 所有运行时数据严格保存在当前项目的存储目录内。
 - 支持 Node.js 24 LTS 和 Bun。
@@ -82,7 +82,7 @@ Rerank URL 必须是完整的绝对 endpoint；服务不会追加路径。请求
 { "model": "...", "query": "...", "documents": ["..."] }
 ```
 
-服务接受 `results[]` 或 `data[]`，每项必须包含完整且不重复的 `index` 与有限数值 `relevance_score`。Reranker 只重排五路召回前 30 个 chunk，不能新增候选，失败时完整回退初始 RRF。
+服务接受 `results[]` 或 `data[]`，每项必须包含完整且不重复的 `index` 与有限数值 `relevance_score`。Reranker 只能重排五路召回前 30 个 chunk；每篇文档最多发送两个 chunk，重排前 15 名作为权重 2.0 的第六路 RRF 信号。重排不能新增候选，失败时完整回退初始 RRF。
 
 Embedding 与 Reranker 配置、超时和密钥完全独立。只配置 URL 或模型时，对应能力关闭并产生诊断 warning；词法搜索始终可用。
 
@@ -158,6 +158,7 @@ Markdown 是唯一不可替代数据。删除 `index.sqlite` 后，下次搜索�
 
 - `matches[]`：项目相对路径、标题、章节、真实物理行范围、摘要、相关度、类型、标签、工件、修订来源；
 - `signals`：词法、语义、类型、时间、关系和 Rerank 的 rank/score；
+- 最终结果按文档聚合，只保留融合分数最高的 chunk，因此 `matches[]` 不会重复文件；
 - `diagnostics.mode`：只有查询向量成功且至少一个当前模型语料向量参与排名时为 `hybrid`，否则为 `lexical-only`；
 - `diagnostics.warnings`：索引、metadata、断裂关系、embedding 与 Reranker 的安全降级原因。
 
@@ -183,7 +184,7 @@ Markdown 是唯一不可替代数据。删除 `index.sqlite` 后，下次搜索�
 
 启用 embedding 时，服务只发送 trim 后的查询和每个 chunk 的有界 `search_text`；超过 4096 字符的文本保留首尾。不会发送完整 Markdown 文件、数据库、关系图或索引元数据。
 
-启用 Reranker 时，服务最多发送 30 个候选字符串。每个字符串包含项目相对文件名、标题、章节、创建时间、类型、标签、工件和该 chunk 的 `search_text`。Rerank 分数只存在于当前查询内，不写 SQLite、不写磁盘缓存。
+启用 Reranker 时，服务从五路召回前 30 个 chunk 中为每篇文档最多发送两个候选字符串。每个字符串包含项目相对文件名、标题、章节、创建时间、类型、标签、工件和该 chunk 的 `search_text`。只有重排前 15 名参与第六路 RRF；Rerank 分数只存在于当前查询内，不写 SQLite、不写磁盘缓存。
 
 API key 只通过请求头发送，不写磁盘、不进入模型 key、warning 或结构化结果。查询向量只保存在最多 256 项的进程内 LRU 中。
 
