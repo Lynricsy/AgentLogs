@@ -1661,7 +1661,7 @@ const cleanString = (max) => z.string().trim().min(1).max(max).refine(
 );
 
 function createServer() {
-  const server = new McpServer({ name: 'agent-log-server', version: '2.0.0' });
+  const server = new McpServer({ name: 'agent-log-server', version: '2.0.1' });
   server.registerTool('record-agent-log', {
     title: '记录 Agent 工作日志',
     description: '生成带可验证 metadata v1 的递增编号 Markdown 日志，并维护项目内存储。',
